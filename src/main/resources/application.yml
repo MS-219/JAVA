@@ -1,0 +1,63 @@
+server:
+  port: 5389
+  # host-ip: 192.168.1.181 # 手动指定本机局域网 IP，防止自动获取到虚拟网卡 IP
+
+spring:
+  main:
+    banner-mode: off
+    log-startup-info: false
+  datasource:
+    url: jdbc:h2:file:./data/testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    show-sql: false
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+
+logging:
+  level:
+    root: ERROR
+    org.springframework: ERROR
+    org.apache.catalina: ERROR
+    org.apache.tomcat: ERROR
+    com.yinlian: INFO # 只看这里！
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %msg%n" # 简化日志格式，去掉线程名、类名等冗余信息
+
+unionpay:
+  baseUrl: https://wspark.chinaums.com/newparkposapi/
+  platformBaseUrl: https://wspark.chinaums.com/newparkplatformapi/
+  mchntCode: 10002856
+  termNo: 11202126
+  termName: 门禁刷脸1
+  storeCode: 0000
+  secretKey: 9PA8CZA3IKTNX8KT
+  parkCode: 10002856
+  msgSrc: TRADITION_POS
+  platformMsgSrc: XBMAUIJV
+  signKey: 8957D209968D43D59DE7F97096BA3BED
+  cashierCode: "0004"
+  cashierPassword: "000000"
+  version: "2.0"
+  # 生产公钥 (与 .env 保持一致)
+  rsaPublicKey: MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCbqxdUtcr3O4o/gXY3BCUdixabn4rIc8l6DUjVLPEA7hiq+hOApYDKVdlrHVQs2LzxpG9NI0KtLHjM7Vt2bHQtgXBBzP4zchClUZ1ZvVxvMKraU9kvK3sdpuimyLBBVT+z4NIZTYvpm833Yhup6KzwM7u8zz1a/wegChM9RMB3gwIDAQAB
+  encryptKey: D8ABDE1EEA96138EE053F0FE83909C45
+  attendGroupCode: "0000"
+
+device:
+  # 门禁设备的IP地址列表（支持多台设备）
+  ips: 
+    - 192.168.1.221
+    # - 192.168.1.222  # 取消注释并修改为实际IP以添加更多设备
+    # - 192.168.1.223
+  auto-push: true   # 是否自动推送人脸到设备
+
+mqtt:
+  host: tcp://127.0.0.1:1883 # 连接本地 MQTT Broker
+  clientId: local-server
+
