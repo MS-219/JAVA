@@ -24,21 +24,26 @@ public class PlatformSyncService {
     }
 
     public void syncAllMembers(String lastUpdateTime) throws Exception {
+        logger.info("[SYNC] 平台会员同步: 开始，lastUpdateTime={}", lastUpdateTime);
         paginatePlatform("plat.member.sync", lastUpdateTime,
                 pageNo -> unionPayClient.fetchMembers(pageNo, DEFAULT_PAGE_SIZE, lastUpdateTime),
                 resp -> {
                     JSONArray memberList = resp.getJSONArray("memberList");
                     memberSyncService.saveMembers(memberList);
                 });
+        logger.info("[SYNC] 平台会员同步: 完成");
     }
 
     public void syncAllMemberCards(String lastUpdateTime) throws Exception {
+        logger.info("[SYNC] 平台会员卡同步: 开始，lastUpdateTime={}", lastUpdateTime);
         paginatePlatform("plat.member.card.sync", lastUpdateTime,
                 pageNo -> unionPayClient.fetchMemberCards(pageNo, DEFAULT_PAGE_SIZE, lastUpdateTime),
                 resp -> memberSyncService.saveMemberCards(resp.getJSONArray("memberCardList")));
+        logger.info("[SYNC] 平台会员卡同步: 完成");
     }
 
     public void syncFaceBindings(int syncType, String startTime) throws Exception {
+        logger.info("[SYNC] 平台人脸绑定同步: 开始，syncType={}, startTime={}", syncType, startTime);
         JSONObject resp = unionPayClient.fetchFaceBindings(syncType, startTime);
         JSONArray bindList = resp.getJSONArray("bindList");
         JSONArray unbindList = resp.getJSONArray("unbindList");
@@ -73,6 +78,10 @@ public class PlatformSyncService {
         memberSyncService.recordSyncLog("plat.face.sync", 0, 0,
                 resp.getString("respCode"), resp.getString("respDesc"),
                 "0000".equals(resp.getString("respCode")));
+        logger.info("[SYNC] 平台人脸绑定同步: 完成，bindCount={}, unbindCount={}, respCode={}",
+                bindList == null ? 0 : bindList.size(),
+                unbindList == null ? 0 : unbindList.size(),
+                resp.getString("respCode"));
     }
 
     public String downloadFaceAndStore(String cardNo) throws Exception {
@@ -102,7 +111,7 @@ public class PlatformSyncService {
                     ? resp.getJSONArray("memberCardList")
                     : resp.getJSONArray("memberList");
             int size = list == null ? 0 : list.size();
-            logger.info("{} page {} synced, size={}", syncType, pageNo, size);
+            logger.info("[SYNC] {} 第 {} 页同步完成，本页 {} 条，respCode={}", syncType, pageNo, size, respCode);
             if (size < DEFAULT_PAGE_SIZE) {
                 break;
             }
@@ -120,4 +129,3 @@ public class PlatformSyncService {
         void consume(JSONObject resp) throws Exception;
     }
 }
-

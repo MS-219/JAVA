@@ -4,6 +4,8 @@ import com.alibaba.fastjson.JSONObject;
 import com.yinlian.service.PlatformSyncService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -33,85 +35,79 @@ public class SyncTask {
         this.deviceSyncService = deviceSyncService;
     }
 
-    // 每5分钟执行一次全量同步 (300,000 ms)
-    // 使用 fixedDelay 确保上一次执行完后才开始下一次计时，避免任务堆积
-    @Scheduled(fixedDelay = 300000)
-    public void syncAllData() {
-        logger.info("Scheduled Sync Task Started at {}", LocalDateTime.now());
-        try {
-            // 0. 清空 faces 文件夹，确保数据完全同步（删除后台已删除的人脸）
-            logger.info("Cleaning up faces directory...");
-            cleanupFacesDirectory();
+    @EventListener(ApplicationReadyEvent.class)
+    public void triggerInitialSyncAfterStartup() {
+        Thread thread = new Thread(() -> {
+            try {
+                Thread.sleep(15000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            logger.info("[SYNC] 启动后首次同步准备开始");
+            syncAllData();
+        }, "initial-sync-task");
+        thread.setDaemon(true);
+        thread.start();
+    }
 
+    // 每5分钟执行一次全量同步，首次调度在启动 60 秒后触发
+    // 使用 fixedDelay 确保上一次执行完后才开始下一次计时，避免任务堆积
+    @Scheduled(initialDelayString = "${sync.initial-delay-ms:60000}", fixedDelayString = "${sync.fixed-delay-ms:300000}")
+    public void syncAllData() {
+        LocalDateTime startedAt = LocalDateTime.now();
+        logger.info("[SYNC] ==================== 定时同步开始 {} ====================", startedAt);
+        try {
             // 1. 同步所有会员
-            logger.info("Starting scheduled member sync...");
+            logger.info("[SYNC] 阶段1: 开始同步会员");
             platformSyncService.syncAllMembers(null); // null 表示全量同步
 
-            // 2. 同步人脸绑定关系 (会自动下载图片)
-            logger.info("Starting scheduled face binding sync...");
+            // 2. 同步所有会员卡
+            logger.info("[SYNC] 阶段2: 开始同步会员卡");
+            platformSyncService.syncAllMemberCards(null); // null 表示全量同步
+
+            // 3. 同步人脸绑定关系 (会自动下载图片)
+            logger.info("[SYNC] 阶段3: 开始同步人脸绑定与图片");
             platformSyncService.syncFaceBindings(0, null); // 0=全量, null=不限时间
 
-            // 3. HTTP 自动推送到配置的设备
+            // 4. HTTP 自动推送到配置的设备
             if (autoPush && deviceIps != null && !deviceIps.isEmpty()) {
-                logger.info("Auto-push enabled, pushing to {} device(s)", deviceIps.size());
+                logger.info("[SYNC] 阶段4: 开始向 {} 台设备推送数据", deviceIps.size());
                 for (String deviceIp : deviceIps) {
                     if (deviceIp == null || deviceIp.trim().isEmpty()) {
                         continue;
                     }
                     try {
-                        logger.info("Pushing to device: {}", deviceIp);
+                        logger.info("[SYNC] 设备 {}: 开始推送", deviceIp);
                         JSONObject result = deviceHttpSyncService.syncAllToDevice(deviceIp);
-                        logger.info("HTTP push result for {}: {}", deviceIp, result.toJSONString());
+                        logger.info("[SYNC] 设备 {}: 推送结果 {}", deviceIp, result.toJSONString());
                     } catch (Exception ex) {
-                        logger.error("Failed to auto-push to device " + deviceIp, ex);
+                        logger.error("[SYNC] 设备 {}: 推送失败", deviceIp, ex);
                     }
                 }
             } else if (autoPush) {
-                logger.warn("Auto-push enabled but no device IPs configured");
+                logger.warn("[SYNC] 阶段4: 已开启自动推送，但没有配置设备IP");
             }
 
-            // 4. MQTT 推送到活跃设备 (备用方案)
+            // 5. MQTT 推送到活跃设备 (备用方案)
             java.util.Set<String> activeDevices = deviceSyncService.getActiveDevices();
             if (activeDevices.isEmpty()) {
-                logger.info("No active devices found, skipping MQTT push.");
+                logger.info("[SYNC] 阶段5: 没有活跃设备，跳过 MQTT 推送");
             } else {
+                logger.info("[SYNC] 阶段5: 开始向 {} 个活跃设备做 MQTT 推送", activeDevices.size());
                 for (String devSno : activeDevices) {
-                    logger.info("Pushing data to active device via MQTT: {}", devSno);
+                    logger.info("[SYNC] 活跃设备 {}: 开始 MQTT 推送", devSno);
                     try {
                         deviceSyncService.pushAllMembers(devSno);
                     } catch (Exception ex) {
-                        logger.error("Failed to push to device " + devSno, ex);
+                        logger.error("[SYNC] 活跃设备 {}: MQTT 推送失败", devSno, ex);
                     }
                 }
             }
 
-            logger.info("Scheduled Sync Task Completed Successfully");
+            logger.info("[SYNC] ==================== 定时同步完成 {} ====================", LocalDateTime.now());
         } catch (Exception e) {
-            logger.error("Scheduled Sync Task Failed", e);
-        }
-    }
-
-    /**
-     * 清空 faces 文件夹，确保每次同步都是完全重新下载
-     * 这样可以删除后台已经删除但本地还保留的旧人脸照片
-     */
-    private void cleanupFacesDirectory() {
-        try {
-            java.nio.file.Path facesDir = java.nio.file.Paths.get("data", "faces");
-            if (java.nio.file.Files.exists(facesDir)) {
-                java.nio.file.Files.walk(facesDir)
-                        .filter(java.nio.file.Files::isRegularFile)
-                        .forEach(file -> {
-                            try {
-                                java.nio.file.Files.delete(file);
-                            } catch (Exception e) {
-                                logger.warn("Failed to delete file: " + file, e);
-                            }
-                        });
-                logger.info("Faces directory cleaned up successfully");
-            }
-        } catch (Exception e) {
-            logger.error("Failed to cleanup faces directory", e);
+            logger.error("[SYNC] ==================== 定时同步失败 ====================", e);
         }
     }
 }

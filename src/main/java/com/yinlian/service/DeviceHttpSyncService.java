@@ -22,7 +22,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class DeviceHttpSyncService {
@@ -51,17 +54,14 @@ public class DeviceHttpSyncService {
             return result;
         }
 
-        // 先清空设备上的所有白名单，确保数据完全同步
-        logger.info("Clearing all whitelist on device {}...", deviceIp);
-        if (!deleteAllWhiteList(deviceIp)) {
-            logger.warn("Failed to clear device whitelist, but continuing with sync...");
-        }
-
         List<MemberEntity> members = memberRepository.findAll();
-        logger.info("HTTP sync to device {}: found {} members", deviceIp, members.size());
+        logger.info("[SYNC] 设备 {}: 开始校准白名单，本地会员总数 {}", deviceIp, members.size());
+        Set<String> desiredMemberCodes = new HashSet<>();
         int total = 0;
         int success = 0;
         int failed = 0;
+        int deleted = 0;
+        int deleteFailed = 0;
 
         int missingCard = 0;
         int missingFace = 0;
@@ -70,6 +70,9 @@ public class DeviceHttpSyncService {
         for (MemberEntity member : members) {
             String memberCode = member.getMemberCode();
             if (StringUtils.isBlank(memberCode)) {
+                continue;
+            }
+            if (Integer.valueOf(1).equals(member.getDeleted())) {
                 continue;
             }
             MemberCardEntity card = memberCardRepository.findFirstByMemberCode(memberCode);
@@ -96,6 +99,7 @@ public class DeviceHttpSyncService {
                 continue;
             }
 
+            desiredMemberCodes.add(memberCode);
             total++;
             boolean ok = sendAddWhiteList(deviceIp, total, total, member, card, base64);
             if (ok) {
@@ -105,14 +109,28 @@ public class DeviceHttpSyncService {
             }
         }
 
-        logger.info(
-                "Sync check result: Total Members: {}, Missing Card: {}, Missing Face Record: {}, Missing Image File: {}",
-                members.size(), missingCard, missingFace, missingImage);
+        Set<String> deviceMemberCodes = fetchDeviceWhiteListIds(deviceIp);
+        for (String existingCode : deviceMemberCodes) {
+            if (StringUtils.isBlank(existingCode) || desiredMemberCodes.contains(existingCode)) {
+                continue;
+            }
+            if (deleteWhiteListEntry(deviceIp, existingCode)) {
+                deleted++;
+            } else {
+                deleteFailed++;
+            }
+        }
 
-        result.put("status", failed == 0 ? "ok" : "partial");
+        logger.info(
+                "[SYNC] 设备 {}: 推送完成，候选总数={}, 成功新增/覆盖={}, 失败={}, 缺卡={}, 缺人脸={}, 缺图片={}, 已删除={}, 删除失败={}",
+                deviceIp, total, success, failed, missingCard, missingFace, missingImage, deleted, deleteFailed);
+
+        result.put("status", failed == 0 && deleteFailed == 0 ? "ok" : "partial");
         result.put("total", total);
         result.put("success", success);
         result.put("failed", failed);
+        result.put("deleted", deleted);
+        result.put("deleteFailed", deleteFailed);
         return result;
     }
 
@@ -152,7 +170,7 @@ public class DeviceHttpSyncService {
 
             try (Response response = httpClient.newCall(request).execute()) {
                 String respStr = response.body() != null ? response.body().string() : "";
-                logger.info("HTTP sync->device {} addDeviceWhiteList resp: {}", deviceIp, respStr);
+                logger.info("[SYNC] 设备 {}: 下发人员 {} 响应 {}", deviceIp, member.getMemberCode(), respStr);
                 if (!response.isSuccessful()) {
                     return false;
                 }
@@ -185,18 +203,17 @@ public class DeviceHttpSyncService {
         }
     }
 
-    /**
-     * 清空设备上的所有白名单
-     * 
-     * @param deviceIp 设备IP
-     * @return true=成功, false=失败
-     */
-    private boolean deleteAllWhiteList(String deviceIp) {
+    private boolean deleteWhiteListEntry(String deviceIp, String memberCode) {
         try {
+            JSONObject data = new JSONObject();
+            data.put("employee_number", memberCode);
+            data.put("usertype", "white");
+
             JSONObject body = new JSONObject();
             body.put("password", "123456");
+            body.put("data", data);
 
-            String url = "http://" + deviceIp + ":8091/deleteDeviceAllWhiteList";
+            String url = "http://" + deviceIp + ":8091/deleteDeviceWhiteList";
             Request request = new Request.Builder()
                     .url(url)
                     .post(RequestBody.create(body.toJSONString(), JSON_MEDIA_TYPE))
@@ -204,7 +221,7 @@ public class DeviceHttpSyncService {
 
             try (Response response = httpClient.newCall(request).execute()) {
                 String respStr = response.body() != null ? response.body().string() : "";
-                logger.info("Delete all whitelist response: {}", respStr);
+                logger.info("[SYNC] 设备 {}: 删除人员 {} 响应 {}", deviceIp, memberCode, respStr);
                 if (!response.isSuccessful()) {
                     return false;
                 }
@@ -213,8 +230,57 @@ public class DeviceHttpSyncService {
                 return result != null && result == 0;
             }
         } catch (Exception e) {
-            logger.error("Failed to delete all whitelist on device {}", deviceIp, e);
+            logger.error("Failed to delete member {} on device {}", memberCode, deviceIp, e);
             return false;
+        }
+    }
+
+    private Set<String> fetchDeviceWhiteListIds(String deviceIp) {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("password", "123456");
+
+            String url = "http://" + deviceIp + ":8091/getAllDeviceIdWhiteList";
+            Request request = new Request.Builder()
+                    .url(url)
+                    .post(RequestBody.create(body.toJSONString(), JSON_MEDIA_TYPE))
+                    .build();
+
+            try (Response response = httpClient.newCall(request).execute()) {
+                String respStr = response.body() != null ? response.body().string() : "";
+                logger.info("[SYNC] 设备 {}: 读取现有白名单响应 {}", deviceIp, respStr);
+                if (!response.isSuccessful()) {
+                    return Collections.emptySet();
+                }
+
+                JSONObject respJson = JSONObject.parseObject(respStr);
+                if (respJson == null || respJson.getInteger("result") == null || respJson.getInteger("result") != 0) {
+                    return Collections.emptySet();
+                }
+
+                Set<String> ids = new HashSet<>();
+                JSONObject data = respJson.getJSONObject("data");
+                if (data != null && data.getJSONArray("idNumList") != null) {
+                    for (Object obj : data.getJSONArray("idNumList")) {
+                        if (obj != null) {
+                            ids.add(String.valueOf(obj));
+                        }
+                    }
+                    return ids;
+                }
+
+                if (respJson.getJSONArray("idNumList") != null) {
+                    for (Object obj : respJson.getJSONArray("idNumList")) {
+                        if (obj != null) {
+                            ids.add(String.valueOf(obj));
+                        }
+                    }
+                }
+                return ids;
+            }
+        } catch (Exception e) {
+            logger.error("Failed to fetch whitelist ids from device {}", deviceIp, e);
+            return Collections.emptySet();
         }
     }
 }

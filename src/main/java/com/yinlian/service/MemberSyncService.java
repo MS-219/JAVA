@@ -73,10 +73,10 @@ public class MemberSyncService {
     @Transactional
     public void saveMembers(JSONArray memberList) {
         if (memberList == null || memberList.isEmpty()) {
-            logger.warn("saveMembers: memberList is empty");
+            logger.warn("[SYNC] 会员落库: 本页没有会员数据");
             return;
         }
-        logger.info("saveMembers: processing {} members", memberList.size());
+        logger.info("[SYNC] 会员落库: 本页准备处理 {} 条", memberList.size());
         List<MemberEntity> entities = new ArrayList<>(memberList.size());
         for (Object obj : memberList) {
             if (!(obj instanceof JSONObject)) {
@@ -118,12 +118,13 @@ public class MemberSyncService {
             }
         }
         memberRepository.saveAll(entities);
-        logger.info("saveMembers: successfully saved {} members to DB", entities.size());
+        logger.info("[SYNC] 会员落库: 成功保存 {} 条", entities.size());
     }
 
     @Transactional
     public void saveMemberCards(JSONArray cardList) {
         if (cardList == null || cardList.isEmpty()) {
+            logger.info("[SYNC] 会员卡落库: 本页没有会员卡数据");
             return;
         }
         List<MemberCardEntity> entities = new ArrayList<>(cardList.size());
@@ -153,10 +154,14 @@ public class MemberSyncService {
             entities.add(entity);
         }
         memberCardRepository.saveAll(entities);
+        logger.info("[SYNC] 会员卡落库: 成功保存 {} 条", entities.size());
     }
 
     @Transactional
     public void saveFaceBindings(JSONArray bindList, JSONArray unbindList) {
+        int bindCount = bindList == null ? 0 : bindList.size();
+        int unbindCount = unbindList == null ? 0 : unbindList.size();
+        logger.info("[SYNC] 人脸绑定落库: bind={}, unbind={}", bindCount, unbindCount);
         if (bindList != null) {
             for (Object obj : bindList) {
                 String cardNo = extractCardNo(obj);
@@ -189,6 +194,7 @@ public class MemberSyncService {
                 }
             }
         }
+        logger.info("[SYNC] 人脸绑定落库: 完成");
     }
 
     public void recordSyncLog(String type, int pageNo, int pageSize, String respCode, String respDesc, boolean success) {
@@ -223,6 +229,7 @@ public class MemberSyncService {
             entity.setSyncedAt(LocalDateTime.now());
             memberFaceRepository.save(entity);
 
+            logger.info("[SYNC] 人脸图片保存: cardNo={}, file={}", cardNo, filePath.getFileName());
             return filePath.toAbsolutePath().toString();
         } catch (IOException e) {
             throw new RuntimeException("Failed to persist face image", e);
@@ -522,4 +529,3 @@ public class MemberSyncService {
         return cardEntity != null ? cardEntity.getMemberCode() : null;
     }
 }
-
