@@ -11,11 +11,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 public class SyncTask {
 
     private static final Logger logger = LoggerFactory.getLogger(SyncTask.class);
+    private final AtomicBoolean syncRunning = new AtomicBoolean(false);
 
     private final PlatformSyncService platformSyncService;
     private final com.yinlian.service.DeviceHttpSyncService deviceHttpSyncService;
@@ -55,6 +57,10 @@ public class SyncTask {
     // 使用 fixedDelay 确保上一次执行完后才开始下一次计时，避免任务堆积
     @Scheduled(initialDelayString = "${sync.initial-delay-ms:60000}", fixedDelayString = "${sync.fixed-delay-ms:300000}")
     public void syncAllData() {
+        if (!syncRunning.compareAndSet(false, true)) {
+            logger.warn("[SYNC] 上一轮同步仍在执行，跳过本次触发");
+            return;
+        }
         LocalDateTime startedAt = LocalDateTime.now();
         logger.info("[SYNC] ==================== 定时同步开始 {} ====================", startedAt);
         try {
@@ -108,6 +114,8 @@ public class SyncTask {
             logger.info("[SYNC] ==================== 定时同步完成 {} ====================", LocalDateTime.now());
         } catch (Exception e) {
             logger.error("[SYNC] ==================== 定时同步失败 ====================", e);
+        } finally {
+            syncRunning.set(false);
         }
     }
 }
