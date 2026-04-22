@@ -30,7 +30,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Base64;
@@ -58,11 +57,11 @@ public class MemberSyncService {
     private final UnionPayClient unionPayClient;
 
     public MemberSyncService(MemberRepository memberRepository,
-                             MemberCardRepository memberCardRepository,
-                             MemberFaceRepository memberFaceRepository,
-                             SyncLogRepository syncLogRepository,
-                             UnionPayConfig unionPayConfig,
-                             UnionPayClient unionPayClient) {
+            MemberCardRepository memberCardRepository,
+            MemberFaceRepository memberFaceRepository,
+            SyncLogRepository syncLogRepository,
+            UnionPayConfig unionPayConfig,
+            UnionPayClient unionPayClient) {
         this.memberRepository = memberRepository;
         this.memberCardRepository = memberCardRepository;
         this.memberFaceRepository = memberFaceRepository;
@@ -74,10 +73,10 @@ public class MemberSyncService {
     @Transactional
     public void saveMembers(JSONArray memberList) {
         if (memberList == null || memberList.isEmpty()) {
-            logger.warn("[SYNC] 会员落库: 本页没有会员数据");
+            logger.warn("saveMembers: memberList is empty");
             return;
         }
-        logger.info("[SYNC] 会员落库: 本页准备处理 {} 条", memberList.size());
+        logger.info("saveMembers: processing {} members", memberList.size());
         List<MemberEntity> entities = new ArrayList<>(memberList.size());
         for (Object obj : memberList) {
             if (!(obj instanceof JSONObject)) {
@@ -90,6 +89,10 @@ public class MemberSyncService {
                 continue;
             }
             MemberEntity entity = memberRepository.findById(memberCode).orElseGet(MemberEntity::new);
+
+            // 【重要】保留已绑定的 openId，防止同步时被覆盖！
+            String existingOpenId = entity.getOpenId();
+
             entity.setMemberCode(memberCode);
             entity.setMemberUniqueId(json.getString("memberUniqueId"));
             entity.setMemberName(json.getString("memberName"));
@@ -110,6 +113,13 @@ public class MemberSyncService {
             entity.setCreateTime(parseDateTime(json.getString("createTime")));
             entity.setUpdateTime(parseDateTime(json.getString("updateTime")));
             entity.setRawPayload(json.toJSONString());
+
+            // 【重要】恢复 openId，确保用户绑定不丢失
+            if (existingOpenId != null && !existingOpenId.isEmpty()) {
+                entity.setOpenId(existingOpenId);
+                logger.debug("Preserved openId for member {}: {}", memberCode, existingOpenId);
+            }
+
             entities.add(entity);
 
             // 同步接口 2.44 有嵌套的 memberCardList
@@ -119,13 +129,12 @@ public class MemberSyncService {
             }
         }
         memberRepository.saveAll(entities);
-        logger.info("[SYNC] 会员落库: 成功保存 {} 条", entities.size());
+        logger.info("saveMembers: successfully saved {} members to DB", entities.size());
     }
 
     @Transactional
     public void saveMemberCards(JSONArray cardList) {
         if (cardList == null || cardList.isEmpty()) {
-            logger.info("[SYNC] 会员卡落库: 本页没有会员卡数据");
             return;
         }
         List<MemberCardEntity> entities = new ArrayList<>(cardList.size());
@@ -155,14 +164,10 @@ public class MemberSyncService {
             entities.add(entity);
         }
         memberCardRepository.saveAll(entities);
-        logger.info("[SYNC] 会员卡落库: 成功保存 {} 条", entities.size());
     }
 
     @Transactional
     public void saveFaceBindings(JSONArray bindList, JSONArray unbindList) {
-        int bindCount = bindList == null ? 0 : bindList.size();
-        int unbindCount = unbindList == null ? 0 : unbindList.size();
-        logger.info("[SYNC] 人脸绑定落库: bind={}, unbind={}", bindCount, unbindCount);
         if (bindList != null) {
             for (Object obj : bindList) {
                 String cardNo = extractCardNo(obj);
@@ -195,10 +200,10 @@ public class MemberSyncService {
                 }
             }
         }
-        logger.info("[SYNC] 人脸绑定落库: 完成");
     }
 
-    public void recordSyncLog(String type, int pageNo, int pageSize, String respCode, String respDesc, boolean success) {
+    public void recordSyncLog(String type, int pageNo, int pageSize, String respCode, String respDesc,
+            boolean success) {
         SyncLogEntity log = new SyncLogEntity();
         log.setSyncType(type);
         log.setPageNo(pageNo);
@@ -230,7 +235,6 @@ public class MemberSyncService {
             entity.setSyncedAt(LocalDateTime.now());
             memberFaceRepository.save(entity);
 
-            logger.info("[SYNC] 人脸图片保存: cardNo={}, file={}", cardNo, filePath.getFileName());
             return filePath.toAbsolutePath().toString();
         } catch (IOException e) {
             throw new RuntimeException("Failed to persist face image", e);
@@ -242,79 +246,114 @@ public class MemberSyncService {
             return new byte[0];
         }
         try {
+            // Clean input (remove newlines, spaces)
             String cleaned = base64Content.replaceAll("\\s+", "");
+
+            // 文档中人脸密文可能是十六进制串，也可能是Base64
             byte[] encrypted;
+            // 只有当长度是偶数且只包含Hex字符时才尝试Hex解析
+            // 但为了防止Base64恰好符合Hex格式的误判，我们可以尝试优先Base64解码
+            // 这里保留原逻辑，但在日志中增加调试信息
             if (cleaned.matches("^[0-9A-Fa-f]+$") && cleaned.length() % 2 == 0) {
                 try {
                     encrypted = hexToBytes(cleaned);
                 } catch (Exception e) {
+                    // Fallback to Base64 if Hex fails (unlikely with regex match but safe)
                     encrypted = Base64.getDecoder().decode(cleaned);
                 }
             } else {
                 encrypted = Base64.getDecoder().decode(cleaned);
             }
-            if (isImageFile(encrypted)) {
-                logger.info("[SYNC] Face image payload is already an image stream.");
-                return encrypted;
+
+            // 优先使用配置文件里的 encryptKey（用于解密平台接口返回的人脸图片）
+            String keyStr = unionPayConfig.getEncryptKey();
+            String keySource = "Config EncryptKey";
+
+            if (StringUtils.isBlank(keyStr)) {
+                // 其次使用 secretKey
+                keyStr = unionPayConfig.getSecretKey();
+                keySource = "Config SecretKey";
             }
-            byte[] decrypted = decryptWithCandidateKeys(encrypted);
-            if (decrypted.length > 0) {
+
+            if (StringUtils.isBlank(keyStr)) {
+                // 最后回退到 workingKey（POS签到密钥，一般不适合解密图片）
+                keyStr = unionPayClient.getWorkingKey();
+                keySource = "Working Key";
+            }
+
+            // Log key source for debugging (hide actual key in production)
+            logger.info("Decrypting face image using: {}, Key: {}", keySource, keyStr);
+
+            // 尝试多种解密算法组合
+            byte[] decrypted = tryDecryptWithAllMethods(encrypted, keyStr);
+
+            // 检查解密结果是否已经是图片 (JPEG: FF D8, PNG: 89 50 4E 47)
+            if (isImageFile(decrypted)) {
                 return decrypted;
             }
-            logger.warn("[SYNC] Face image decrypt produced no usable bytes. payloadLength={}", cleaned.length());
-            return new byte[0];
-        } catch (Exception e) {
-            logger.error("Failed to decrypt face image. Length: " + (base64Content != null ? base64Content.length() : "null") + ", Error: " + e.toString(), e);
-            return new byte[0];
-        }
-    }
 
-    private byte[] decryptWithCandidateKeys(byte[] encrypted) {
-        LinkedHashSet<String> candidates = new LinkedHashSet<>();
-        if (StringUtils.isNotBlank(unionPayConfig.getEncryptKey())) {
-            candidates.add(unionPayConfig.getEncryptKey());
-        }
-        if (StringUtils.isNotBlank(unionPayClient.getWorkingKey())) {
-            candidates.add(unionPayClient.getWorkingKey());
-        }
-        if (StringUtils.isNotBlank(unionPayConfig.getSecretKey())) {
-            candidates.add(unionPayConfig.getSecretKey());
-        }
-        for (String key : candidates) {
-            byte[] decrypted = tryDecryptWithAllMethods(encrypted, key);
-            byte[] normalized = normalizeFaceImageBytes(decrypted);
-            if (normalized.length > 0) {
-                logger.info("[SYNC] Face image decrypt succeeded with candidate key type={}", describeKeySource(key));
-                return normalized;
+            // 如果不是图片头，尝试作为 String 进行 Base64 二次解码
+            try {
+                String potentialBase64 = new String(decrypted, StandardCharsets.UTF_8).trim();
+                if (potentialBase64.length() > 0 && isBase64Chars(potentialBase64)) {
+                    byte[] secondDecode = Base64.getDecoder().decode(potentialBase64);
+                    if (isImageFile(secondDecode)) {
+                        logger.info("Success: Double Base64 decoding required.");
+                        return secondDecode;
+                    }
+                    return secondDecode;
+                }
+            } catch (Exception e) {
+                // Ignore
             }
+
+            return decrypted;
+
+        } catch (Exception e) {
+            logger.error("Failed to decrypt face image. Length: "
+                    + (base64Content != null ? base64Content.length() : "null") + ", Error: " + e.toString(), e);
+            return new byte[0];
         }
-        return new byte[0];
     }
 
     private byte[] tryDecryptWithAllMethods(byte[] content, String keyStr) {
         // 1. Standard 3DES (Hex Key)
         try {
             byte[] keyBytes = normalize3DesKey(keyStr);
-            
+
             byte[] res = doDecrypt(content, keyBytes, "DESede/ECB/PKCS5Padding");
-            if (isSuccess(res)) { logger.info("Success with: 3DES/ECB/PKCS5Padding (Hex Key)"); return res; }
-            
+            if (isSuccess(res)) {
+                logger.info("Success with: 3DES/ECB/PKCS5Padding (Hex Key)");
+                return res;
+            }
+
             res = doDecrypt(content, keyBytes, "DESede/ECB/NoPadding");
-            if (isSuccess(res)) { logger.info("Success with: 3DES/ECB/NoPadding (Hex Key)"); return res; }
-        } catch (Exception e) {}
+            if (isSuccess(res)) {
+                logger.info("Success with: 3DES/ECB/NoPadding (Hex Key)");
+                return res;
+            }
+        } catch (Exception e) {
+        }
 
         // 2. DES (Hex Key, first 8 bytes)
         try {
             byte[] fullKey = hexToBytes(keyStr);
             byte[] desKey = new byte[8];
             System.arraycopy(fullKey, 0, desKey, 0, 8);
-            
+
             byte[] res = doDecrypt(content, desKey, "DES/ECB/PKCS5Padding");
-            if (isSuccess(res)) { logger.info("Success with: DES/ECB/PKCS5Padding (Hex Key)"); return res; }
+            if (isSuccess(res)) {
+                logger.info("Success with: DES/ECB/PKCS5Padding (Hex Key)");
+                return res;
+            }
 
             res = doDecrypt(content, desKey, "DES/ECB/NoPadding");
-            if (isSuccess(res)) { logger.info("Success with: DES/ECB/NoPadding (Hex Key)"); return res; }
-        } catch (Exception e) {}
+            if (isSuccess(res)) {
+                logger.info("Success with: DES/ECB/NoPadding (Hex Key)");
+                return res;
+            }
+        } catch (Exception e) {
+        }
 
         // 3. AES (Hex Key, 16 bytes)
         try {
@@ -324,74 +363,58 @@ public class MemberSyncService {
                 Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
                 cipher.init(Cipher.DECRYPT_MODE, keySpec);
                 byte[] res = cipher.doFinal(content);
-                if (isSuccess(res)) { logger.info("Success with: AES/ECB/PKCS5Padding (Hex Key)"); return res; }
-                
+                if (isSuccess(res)) {
+                    logger.info("Success with: AES/ECB/PKCS5Padding (Hex Key)");
+                    return res;
+                }
+
                 cipher = Cipher.getInstance("AES/ECB/NoPadding");
                 cipher.init(Cipher.DECRYPT_MODE, keySpec);
                 res = cipher.doFinal(content);
-                if (isSuccess(res)) { logger.info("Success with: AES/ECB/NoPadding (Hex Key)"); return res; }
+                if (isSuccess(res)) {
+                    logger.info("Success with: AES/ECB/NoPadding (Hex Key)");
+                    return res;
+                }
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+        }
 
         // 4. 3DES (String Key Bytes) - This is the winner!
         try {
             byte[] rawStringBytes = keyStr.getBytes(StandardCharsets.UTF_8);
             byte[] keyBytes = new byte[24];
             System.arraycopy(rawStringBytes, 0, keyBytes, 0, Math.min(rawStringBytes.length, 24));
-            
+
             byte[] res = doDecrypt(content, keyBytes, "DESede/ECB/PKCS5Padding");
-            if (isSuccess(res)) { logger.info("Success with: 3DES/ECB/PKCS5Padding (String Key)"); return res; }
-            
-            res = doDecrypt(content, keyBytes, "DESede/ECB/NoPadding");
-            if (isSuccess(res)) { logger.info("Success with: 3DES/ECB/NoPadding (String Key)"); return res; }
-        } catch (Exception e) {}
-
-        return new byte[0];
-    }
-
-    private byte[] normalizeFaceImageBytes(byte[] decrypted) {
-        if (decrypted == null || decrypted.length == 0) {
-            return new byte[0];
-        }
-        if (isImageFile(decrypted)) {
-            return decrypted;
-        }
-        try {
-            String potentialBase64 = new String(decrypted, StandardCharsets.UTF_8).trim();
-            if (potentialBase64.length() > 0 && isBase64Chars(potentialBase64)) {
-                byte[] secondDecode = Base64.getDecoder().decode(potentialBase64);
-                if (isImageFile(secondDecode)) {
-                    logger.info("[SYNC] Face image required secondary Base64 decode.");
-                    return secondDecode;
-                }
+            if (isSuccess(res)) {
+                logger.info("Success with: 3DES/ECB/PKCS5Padding (String Key)");
+                return res;
             }
-        } catch (Exception ignored) {
-        }
-        return new byte[0];
-    }
 
-    private String describeKeySource(String key) {
-        if (StringUtils.equals(key, unionPayConfig.getEncryptKey())) {
-            return "encryptKey";
+            res = doDecrypt(content, keyBytes, "DESede/ECB/NoPadding");
+            if (isSuccess(res)) {
+                logger.info("Success with: 3DES/ECB/NoPadding (String Key)");
+                return res;
+            }
+        } catch (Exception e) {
         }
-        if (StringUtils.equals(key, unionPayClient.getWorkingKey())) {
-            return "workingKey";
-        }
-        if (StringUtils.equals(key, unionPayConfig.getSecretKey())) {
-            return "secretKey";
-        }
-        return "unknown";
+
+        return new byte[0];
     }
 
     private boolean isSuccess(byte[] data) {
-        if (isImageFile(data)) return true;
+        if (isImageFile(data))
+            return true;
         // Check if it is Base64 encoded image
-        if (data == null || data.length < 4) return false;
+        if (data == null || data.length < 4)
+            return false;
         // Check common Base64 headers
         // /9j/ -> JPEG
-        if (data[0] == 0x2F && data[1] == 0x39 && data[2] == 0x6A && data[3] == 0x2F) return true;
+        if (data[0] == 0x2F && data[1] == 0x39 && data[2] == 0x6A && data[3] == 0x2F)
+            return true;
         // iVBOR -> PNG
-        if (data[0] == 0x69 && data[1] == 0x56 && data[2] == 0x42 && data[3] == 0x4F) return true;
+        if (data[0] == 0x69 && data[1] == 0x56 && data[2] == 0x42 && data[3] == 0x4F)
+            return true;
         return false;
     }
 
@@ -404,22 +427,26 @@ public class MemberSyncService {
     }
 
     private boolean isImageFile(byte[] data) {
-        if (data == null || data.length < 4) return false;
+        if (data == null || data.length < 4)
+            return false;
         // JPEG: FF D8
-        if ((data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8) return true;
+        if ((data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8)
+            return true;
         // PNG: 89 50 4E 47
-        if ((data[0] & 0xFF) == 0x89 && (data[1] & 0xFF) == 0x50 && 
-            (data[2] & 0xFF) == 0x4E && (data[3] & 0xFF) == 0x47) return true;
+        if ((data[0] & 0xFF) == 0x89 && (data[1] & 0xFF) == 0x50 &&
+                (data[2] & 0xFF) == 0x4E && (data[3] & 0xFF) == 0x47)
+            return true;
         // BMP: 42 4D
-        if ((data[0] & 0xFF) == 0x42 && (data[1] & 0xFF) == 0x4D) return true;
+        if ((data[0] & 0xFF) == 0x42 && (data[1] & 0xFF) == 0x4D)
+            return true;
         return false;
     }
 
     private boolean isBase64Chars(String str) {
         // 允许 Base64 字符集
         for (char c : str.toCharArray()) {
-            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || 
-                  (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' || Character.isWhitespace(c))) {
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' || Character.isWhitespace(c))) {
                 return false;
             }
         }
@@ -542,5 +569,9 @@ public class MemberSyncService {
         }
         MemberCardEntity cardEntity = memberCardRepository.findFirstByCardNo(cardNo);
         return cardEntity != null ? cardEntity.getMemberCode() : null;
+    }
+
+    public List<MemberCardEntity> findCardsByCardNo(String cardNo) {
+        return memberCardRepository.findByCardNo(cardNo);
     }
 }

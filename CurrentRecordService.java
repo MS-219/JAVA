@@ -599,22 +599,16 @@ public class RecordService {
     }
 
     /**
-     * 导出通行记录为 CSV 格式（支持分页）
-     *
-     * @param startDate  开始日期
-     * @param endDate    结束日期
+     * 导出通行记录为 CSV 格式
+     * 
+     * @param date       日期
      * @param deviceCode 设备代码
      * @param name       人名搜索（可选）
-     * @param page       页码（可选，null表示导出全部）
-     * @param size       每页大小（可选，null表示导出全部）
      */
-    public String exportRecordsAsCsv(String startDate, String endDate, String deviceCode, String name, Integer page, Integer size) {
+    public String exportRecordsAsCsv(String date, String deviceCode, String name) {
         StringBuilder csv = new StringBuilder();
 
         List<JSONObject> rawList;
-
-        // 确定查询的最大条数
-        int maxRecords = (page != null && size != null) ? size : 10000;
 
         // 如果有人名搜索
         if (StringUtils.isNotBlank(name)) {
@@ -626,39 +620,13 @@ public class RecordService {
             for (com.yinlian.model.MemberEntity m : members) {
                 memberCodes.add(m.getMemberCode());
             }
-            rawList = repository.searchByPersonCodes(memberCodes, maxRecords);
-        } else if (StringUtils.isBlank(startDate) && StringUtils.isBlank(endDate)) {
-            // 如果没有日期参数，查询所有记录
-            rawList = repository.getLatestRecords(maxRecords);
+            rawList = repository.searchByPersonCodes(memberCodes, 1000);
+        } else if (StringUtils.isBlank(date)) {
+            // 如果没有日期参数，查询所有记录（最近1000条）
+            rawList = repository.getLatestRecords(1000);
         } else {
-            // 按日期和设备筛选（使用startDate作为主要日期）
-            String dateFilter = StringUtils.isNotBlank(startDate) ? startDate : endDate;
-            rawList = repository.getFilteredRecords(dateFilter, deviceCode, maxRecords);
-
-            // 如果有日期范围，需要在内存中过滤
-            if (StringUtils.isNotBlank(startDate) && StringUtils.isNotBlank(endDate) && !startDate.equals(endDate)) {
-                final String finalStartDate = startDate;
-                final String finalEndDate = endDate;
-                rawList = rawList.stream()
-                    .filter(r -> {
-                        String time = r.getString("time");
-                        if (time == null) return false;
-                        String recordDate = time.split(" ")[0];
-                        return recordDate.compareTo(finalStartDate) >= 0 && recordDate.compareTo(finalEndDate) <= 0;
-                    })
-                    .collect(java.util.stream.Collectors.toList());
-            }
-        }
-
-        // 如果指定了分页参数，进行分页处理
-        if (page != null && size != null && page >= 0 && size > 0) {
-            int fromIndex = page * size;
-            int toIndex = Math.min(fromIndex + size, rawList.size());
-            if (fromIndex < rawList.size()) {
-                rawList = rawList.subList(fromIndex, toIndex);
-            } else {
-                rawList = new java.util.ArrayList<>();
-            }
+            // 按日期和设备筛选
+            rawList = repository.getFilteredRecords(date, deviceCode, 1000);
         }
 
         // 生成 CSV 数据
@@ -690,169 +658,6 @@ public class RecordService {
         }
 
         return csv.toString();
-    }
-
-    /**
-     * 导出通行记录为 CSV 格式（旧版本，保持向后兼容）
-     *
-     * @param date       日期
-     * @param deviceCode 设备代码
-     * @param name       人名搜索（可选）
-     */
-    public String exportRecordsAsCsv(String date, String deviceCode, String name) {
-        return exportRecordsAsCsv(date, date, deviceCode, name, null, null);
-    }
-
-    /**
-     * 导出通行记录为 Excel 格式（支持分页）
-     *
-     * @param startDate  开始日期
-     * @param endDate    结束日期
-     * @param deviceCode 设备代码
-     * @param name       人名搜索（可选）
-     * @param page       页码（可选，null表示导出全部）
-     * @param size       每页大小（可选，null表示导出全部）
-     * @param outputStream 输出流
-     */
-    public void exportRecordsAsExcel(String startDate, String endDate, String deviceCode, String name,
-                                      Integer page, Integer size, java.io.OutputStream outputStream) throws Exception {
-        // 创建工作簿
-        org.apache.poi.ss.usermodel.Workbook workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
-        org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("通行记录");
-
-        // 创建样式
-        org.apache.poi.ss.usermodel.CellStyle headerStyle = workbook.createCellStyle();
-        org.apache.poi.ss.usermodel.Font headerFont = workbook.createFont();
-        headerFont.setBold(true);
-        headerFont.setFontHeightInPoints((short) 12);
-        headerStyle.setFont(headerFont);
-        headerStyle.setFillForegroundColor(org.apache.poi.ss.usermodel.IndexedColors.GREY_25_PERCENT.getIndex());
-        headerStyle.setFillPattern(org.apache.poi.ss.usermodel.FillPatternType.SOLID_FOREGROUND);
-        headerStyle.setBorderBottom(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        headerStyle.setBorderTop(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        headerStyle.setBorderLeft(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        headerStyle.setBorderRight(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        headerStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
-
-        // 创建数据样式
-        org.apache.poi.ss.usermodel.CellStyle dataStyle = workbook.createCellStyle();
-        dataStyle.setBorderBottom(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        dataStyle.setBorderTop(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        dataStyle.setBorderLeft(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-        dataStyle.setBorderRight(org.apache.poi.ss.usermodel.BorderStyle.THIN);
-
-        // 创建表头
-        org.apache.poi.ss.usermodel.Row headerRow = sheet.createRow(0);
-        String[] headers = {"部门", "姓名", "时间", "进出方向", "位置/设备", "类型"};
-        for (int i = 0; i < headers.length; i++) {
-            org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
-            cell.setCellValue(headers[i]);
-            cell.setCellStyle(headerStyle);
-        }
-
-        // 获取数据
-        List<JSONObject> rawList;
-        int maxRecords = (page != null && size != null) ? size : 10000;
-
-        if (StringUtils.isNotBlank(name)) {
-            List<com.yinlian.model.MemberEntity> members = memberRepository.findByMemberNameContaining(name);
-            if (members.isEmpty()) {
-                rawList = new java.util.ArrayList<>();
-            } else {
-                List<String> memberCodes = new java.util.ArrayList<>();
-                for (com.yinlian.model.MemberEntity m : members) {
-                    memberCodes.add(m.getMemberCode());
-                }
-                rawList = repository.searchByPersonCodes(memberCodes, maxRecords);
-            }
-        } else if (StringUtils.isBlank(startDate) && StringUtils.isBlank(endDate)) {
-            rawList = repository.getLatestRecords(maxRecords);
-        } else {
-            String dateFilter = StringUtils.isNotBlank(startDate) ? startDate : endDate;
-            rawList = repository.getFilteredRecords(dateFilter, deviceCode, maxRecords);
-
-            if (StringUtils.isNotBlank(startDate) && StringUtils.isNotBlank(endDate) && !startDate.equals(endDate)) {
-                final String finalStartDate = startDate;
-                final String finalEndDate = endDate;
-                rawList = rawList.stream()
-                    .filter(r -> {
-                        String time = r.getString("time");
-                        if (time == null) return false;
-                        String recordDate = time.split(" ")[0];
-                        return recordDate.compareTo(finalStartDate) >= 0 && recordDate.compareTo(finalEndDate) <= 0;
-                    })
-                    .collect(java.util.stream.Collectors.toList());
-            }
-        }
-
-        // 分页处理
-        if (page != null && size != null && page >= 0 && size > 0) {
-            int fromIndex = page * size;
-            int toIndex = Math.min(fromIndex + size, rawList.size());
-            if (fromIndex < rawList.size()) {
-                rawList = rawList.subList(fromIndex, toIndex);
-            } else {
-                rawList = new java.util.ArrayList<>();
-            }
-        }
-
-        // 填充数据
-        int rowNum = 1;
-        for (JSONObject r : rawList) {
-            JSONObject item = enrichRecord(r);
-
-            String time = item.getString("time");
-            String personName = item.getString("name");
-            String department = item.getString("department");
-            String deviceName = item.getString("deviceName");
-            String userType = getTypeName(item.getString("userType"));
-
-            // 从 deviceName 中拆分位置和进出方向
-            String location = deviceName;
-            String direction = "";
-            if (deviceName != null && (deviceName.endsWith(" 入口") || deviceName.endsWith(" 出口"))) {
-                int lastSpace = deviceName.lastIndexOf(' ');
-                location = deviceName.substring(0, lastSpace);
-                direction = deviceName.substring(lastSpace + 1);
-            }
-
-            org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowNum++);
-
-            org.apache.poi.ss.usermodel.Cell cell0 = row.createCell(0);
-            cell0.setCellValue(department != null ? department : "");
-            cell0.setCellStyle(dataStyle);
-
-            org.apache.poi.ss.usermodel.Cell cell1 = row.createCell(1);
-            cell1.setCellValue(personName != null ? personName : "");
-            cell1.setCellStyle(dataStyle);
-
-            org.apache.poi.ss.usermodel.Cell cell2 = row.createCell(2);
-            cell2.setCellValue(time != null ? time : "");
-            cell2.setCellStyle(dataStyle);
-
-            org.apache.poi.ss.usermodel.Cell cell3 = row.createCell(3);
-            cell3.setCellValue(direction);
-            cell3.setCellStyle(dataStyle);
-
-            org.apache.poi.ss.usermodel.Cell cell4 = row.createCell(4);
-            cell4.setCellValue(location != null ? location : "");
-            cell4.setCellStyle(dataStyle);
-
-            org.apache.poi.ss.usermodel.Cell cell5 = row.createCell(5);
-            cell5.setCellValue(userType);
-            cell5.setCellStyle(dataStyle);
-        }
-
-        // 自动调整列宽
-        for (int i = 0; i < headers.length; i++) {
-            sheet.autoSizeColumn(i);
-            // 增加一点额外宽度以确保内容完全显示
-            sheet.setColumnWidth(i, sheet.getColumnWidth(i) + 1000);
-        }
-
-        // 写入输出流
-        workbook.write(outputStream);
-        workbook.close();
     }
 
     private String escapeCsv(String value) {

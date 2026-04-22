@@ -279,7 +279,7 @@ public class RecordController {
     }
 
     /**
-     * 【新增】导出通行记录为 Excel（支持分页）
+     * 【新增】导出通行记录为 CSV（支持分页）
      *
      * @param startDate 开始日期
      * @param endDate   结束日期
@@ -298,8 +298,7 @@ public class RecordController {
             @RequestParam(required = false) Integer size,
             javax.servlet.http.HttpServletResponse response) {
         try {
-            // 设置响应类型为Excel
-            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setContentType("text/csv;charset=UTF-8");
 
             // 根据是否有分页参数生成不同的文件名
             String filename = "access_records";
@@ -313,15 +312,22 @@ public class RecordController {
             if (page != null && size != null) {
                 filename += "_page" + (page + 1) + "_size" + size;
             }
-            filename += ".xlsx";
+            filename += ".csv";
 
-            // 设置文件名，使用URL编码支持中文
-            String encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replaceAll("\\+", "%20");
-            response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFilename);
+            response.setHeader("Content-Disposition", "attachment; filename=" + filename);
 
-            // 获取Excel工作簿并写入响应流
-            recordService.exportRecordsAsExcel(startDate, endDate, device, name, page, size, response.getOutputStream());
+            java.io.OutputStream os = response.getOutputStream();
 
+            // 写入 BOM 以支持 Excel 正确显示中文
+            os.write(new byte[] { (byte) 0xEF, (byte) 0xBB, (byte) 0xBF });
+
+            // CSV 头
+            os.write("部门,姓名,时间,进出方向,位置/设备,类型\n".getBytes("UTF-8"));
+
+            // 获取数据（传递分页参数）
+            String csvData = recordService.exportRecordsAsCsv(startDate, endDate, device, name, page, size);
+            os.write(csvData.getBytes("UTF-8"));
+            os.flush();
         } catch (Exception e) {
             logger.error("导出记录失败", e);
         }

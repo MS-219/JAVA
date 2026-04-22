@@ -37,15 +37,6 @@ public class RecordController {
     @Autowired
     private DeviceHttpSyncService deviceHttpSyncService;
 
-    @Autowired
-    private com.yinlian.service.WeChatService weChatService;
-
-    @Autowired
-    private com.yinlian.repository.MemberRepository memberRepository;
-
-    @Autowired
-    private com.yinlian.repository.MemberCardRepository memberCardRepository;
-
     @GetMapping("/test/sync-members")
     public String testSyncMembers(@RequestParam(defaultValue = "1") int pageNo,
             @RequestParam(defaultValue = "50") int pageSize,
@@ -205,6 +196,14 @@ public class RecordController {
         return resp.toJSONString();
     }
 
+    @PostMapping("/admin/device/http-push-member")
+    public String httpPushMember(@RequestBody JSONObject body) {
+        String deviceIp = body.getString("deviceIp");
+        String memberCode = body.getString("memberCode");
+        JSONObject resp = deviceHttpSyncService.syncMemberToDevice(deviceIp, memberCode);
+        return resp.toJSONString();
+    }
+
     @PostMapping("/device/forbidden-event")
     public String reportForbiddenEvent(@RequestBody JSONObject body) {
         deviceSyncService.recordForbiddenEvent(body);
@@ -218,238 +217,15 @@ public class RecordController {
         return deviceSyncService.listForbiddenEvents();
     }
 
-    @GetMapping("/dashboard/stats")
-    public String getDashboardStats() {
-        return recordService.getDashboardData().toJSONString();
-    }
-
-    /**
-     * 【新增】支持设备和日期筛选的大屏数据接口
-     * 
-     * @param date   日期 (格式: yyyy-MM-dd)，可选，默认今天
-     * @param device 设备代码片段 (如MAC地址后几位: 61:B2)，可选
-     */
-    @GetMapping("/dashboard/stats/filter")
-    public String getDashboardStatsFiltered(
-            @RequestParam(required = false) String date,
-            @RequestParam(required = false) String device) {
-        return recordService.getDashboardDataFiltered(date, device).toJSONString();
-    }
-
-    /**
-     * 【新增】获取设备列表 (用于前端筛选下拉框)
-     */
-    @GetMapping("/dashboard/devices")
-    public String getDeviceList() {
-        return recordService.getDeviceList().toJSONString();
-    }
-
-    /**
-     * 【新增】按人名搜索通行记录（支持日期过滤）
-     * 
-     * @param name      人名关键词
-     * @param startDate 开始日期 (yyyy-MM-dd)，可选
-     * @param endDate   结束日期 (yyyy-MM-dd)，可选
-     */
-    @GetMapping("/dashboard/search")
-    public String searchByName(
-            @RequestParam String name,
-            @RequestParam(required = false) String startDate,
-            @RequestParam(required = false) String endDate) {
-        return recordService.searchByName(name, startDate, endDate).toJSONString();
-    }
-
-    /**
-     * 【新增】分页查询大屏数据
-     * 
-     * @param startDate 开始日期 (yyyy-MM-dd)
-     * @param endDate   结束日期 (yyyy-MM-dd)
-     * @param device    设备代码
-     * @param page      页码 (0开始)
-     * @param size      每页大小 (默认20)
-     */
-    @GetMapping("/dashboard/stats/paged")
-    public String getDashboardStatsPaged(
-            @RequestParam(required = false) String startDate,
-            @RequestParam(required = false) String endDate,
-            @RequestParam(required = false) String device,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        return recordService.getDashboardDataPaged(startDate, endDate, device, page, size).toJSONString();
-    }
-
-    /**
-     * 【新增】导出通行记录为 Excel（支持分页）
-     *
-     * @param startDate 开始日期
-     * @param endDate   结束日期
-     * @param device    设备代码
-     * @param name      人名搜索
-     * @param page      页码（可选，不传则导出全部）
-     * @param size      每页大小（可选，不传则导出全部）
-     */
-    @GetMapping("/dashboard/export")
-    public void exportRecords(
-            @RequestParam(required = false) String startDate,
-            @RequestParam(required = false) String endDate,
-            @RequestParam(required = false) String device,
-            @RequestParam(required = false) String name,
-            @RequestParam(required = false) Integer page,
-            @RequestParam(required = false) Integer size,
-            javax.servlet.http.HttpServletResponse response) {
-        try {
-            // 设置响应类型为Excel
-            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-
-            // 根据是否有分页参数生成不同的文件名
-            String filename = "access_records";
-            if (startDate != null && endDate != null) {
-                filename += "_" + startDate + "_to_" + endDate;
-            } else if (startDate != null) {
-                filename += "_" + startDate;
-            } else {
-                filename += "_" + java.time.LocalDate.now().toString();
-            }
-            if (page != null && size != null) {
-                filename += "_page" + (page + 1) + "_size" + size;
-            }
-            filename += ".xlsx";
-
-            // 设置文件名，使用URL编码支持中文
-            String encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replaceAll("\\+", "%20");
-            response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + encodedFilename);
-
-            // 获取Excel工作簿并写入响应流
-            recordService.exportRecordsAsExcel(startDate, endDate, device, name, page, size, response.getOutputStream());
-
-        } catch (Exception e) {
-            logger.error("导出记录失败", e);
-        }
-    }
-
     @PostMapping("/record/upload/online")
     public String uploadRecord(@RequestBody JSONObject body) {
         recordService.handleRecordUpload(body);
-        return handleUploadLogic(body);
-    }
-
-    // 【新增】兼容设备配置的 /device/record 路径
-    @PostMapping("/device/record")
-    public String uploadRecordCompat(@RequestBody JSONObject body) {
-        recordService.handleRecordUpload(body);
-        return handleUploadLogic(body);
-    }
-
-    // 【新增】兼容设备配置的 /device/heartbeat 路径
-    @PostMapping("/device/heartbeat")
-    public String deviceHeartbeat(@RequestBody JSONObject body) {
-        // String devSno = body.getString("dev_sno");
-        // if (devSno != null) {
-        //     deviceSyncService.recordDeviceHeartbeat(devSno);
-        // }
-
+        // 返回设备需要的格式
+        // 原Node.js: { res: "success" } (假设)
         JSONObject resp = new JSONObject();
-        resp.put("result", 1);
+        resp.put("code", 0); // 统一为 0
+        resp.put("msg", "success");
         resp.put("success", true);
-        resp.put("code", 0);
-        return resp.toJSONString();
-    }
-
-    // 提取公共逻辑，方便 /device/record 复用
-    private String handleUploadLogic(JSONObject body) {
-        // 【新增】提取设备SN并记录上传状态
-        String devSno = body.getString("dev_sno");
-        if (devSno == null)
-            devSno = body.getString("device_sno");
-        if (devSno == null)
-            devSno = body.getString("deviceSn");
-        final String finalDevSno = devSno;
-
-        // 触发微信推送 (异步执行，避免阻塞设备响应)
-        try {
-            new Thread(() -> {
-                try {
-                    // 【调试】打印设备上传的原始数据
-                    logger.info("【调试】设备上传原始数据: {}", body.toJSONString());
-
-                    // 尝试多种字段获取 memberId
-                    String memberId = body.getString("person_id");
-                    String time = body.getString("time");
-                    String tryField = "person_id";
-
-                    if (memberId == null || memberId.isEmpty()) {
-                        memberId = body.getString("member_code");
-                        tryField = "member_code";
-                    }
-                    if (memberId == null || memberId.isEmpty()) {
-                        memberId = body.getString("userid");
-                        tryField = "userid";
-                    }
-                    if (memberId == null || memberId.isEmpty()) {
-                        memberId = body.getString("employee_number");
-                        tryField = "employee_number";
-                    }
-                    if (memberId == null || memberId.isEmpty()) {
-                        memberId = body.getString("id"); // 有些设备可能是 id
-                        tryField = "id";
-                    }
-
-                    if (memberId != null && !memberId.isEmpty()) {
-                        com.yinlian.model.MemberEntity member = memberRepository.findByMemberCode(memberId);
-
-                        if (member == null) {
-                            // 尝试用 memberId 当作 cardNo 查
-                            java.util.List<com.yinlian.model.MemberCardEntity> cards = memberCardRepository.findByCardNo(memberId);
-                            if (cards != null && !cards.isEmpty()) {
-                                String realMemberCode = cards.get(0).getMemberCode();
-                                member = memberRepository.findByMemberCode(realMemberCode);
-                            }
-                        }
-
-                        if (member != null) {
-                            // 【新增】记录设备上传状态
-                            // if (finalDevSno != null) {
-                            //     deviceSyncService.recordDeviceUpload(finalDevSno, member.getMemberName());
-                            // }
-
-                            String openId = member.getOpenId();
-                            if (openId != null && !openId.isEmpty()) {
-                                // 获取模版需要的字段
-                                String cardNo = member.getMemberCode(); // 学生卡号
-                                String className = member.getDepartName(); // 班级
-                                String schoolName = "圣唐王府教育";
-
-                                // 构造显示名称
-                                String displayName = member.getMemberName() + " 刷脸通过";
-
-                                logger.info("【调试】准备发送微信消息给 openId={}, studentName={}, time={}", openId,
-                                        member.getMemberName(), time);
-
-                                weChatService.sendTemplateMessage(openId, displayName, time, cardNo, className,
-                                        schoolName);
-
-                                logger.info("【成功】已发送微信通知给 {}", member.getMemberName());
-                            } else {
-                                logger.warn("【调试】会员 {} 未绑定服务号 (openId 为空)", member.getMemberName());
-                            }
-                        } else {
-                            logger.warn("【调试】未找到 memberCode={} 对应的会员记录", memberId);
-                        }
-                    } else {
-                        logger.warn("【调试】设备上传数据中没有可识别的人员ID字段");
-                    }
-                } catch (Exception e) {
-                    logger.error("【错误】推送微信消息失败", e);
-                }
-            }).start();
-        } catch (Exception e) {
-            logger.error("【错误】启动推送线程失败", e);
-        }
-
-        JSONObject resp = new JSONObject();
-        resp.put("result", 1);
-        resp.put("success", true);
-        resp.put("code", 0);
         return resp.toJSONString();
     }
 
@@ -467,7 +243,7 @@ public class RecordController {
         if (devSno != null) {
             deviceSyncService.registerDevice(devSno);
         }
-
+        
         JSONObject resp = new JSONObject();
         resp.put("code", 0);
         resp.put("msg", "OK");
@@ -483,11 +259,11 @@ public class RecordController {
                 resp.putAll(command);
             }
         }
-
+        
         return resp.toJSONString();
     }
 
-    @Value("${server.host-ip:}")
+    @Value("${server.host-ip:}") 
     private String configHostIp;
 
     private String getHostIp() {
@@ -503,14 +279,11 @@ public class RecordController {
     }
 
     @PostMapping("/device/login")
-    public String deviceLogin(@RequestBody JSONObject body, javax.servlet.http.HttpServletRequest request) {
+    public String deviceLogin(@RequestBody JSONObject body) {
         recordService.handleDeviceLogin(body);
         String devSno = body.getString("dev_sno");
-        String deviceIp = request.getRemoteAddr();
         if (devSno != null) {
             deviceSyncService.registerDevice(devSno);
-            // 【新增】记录设备登录状态
-            // deviceSyncService.recordDeviceLogin(devSno, deviceIp);
         }
 
         JSONObject resp = new JSONObject();
@@ -522,14 +295,14 @@ public class RecordController {
         resp.put("dev_sno", devSno);
         resp.put("token", "dummy_token_" + System.currentTimeMillis()); // 模拟 Token
         resp.put("expiresAt", System.currentTimeMillis() + 3600000); // 1小时后过期
-
+        
         // 尝试告诉设备使用 HTTP 协议，停止 MQTT 重连 (虽然设备可能不听)
-        resp.put("mqProtocol", "HTTP");
+        resp.put("mqProtocol", "HTTP"); 
 
         // 绝招：让设备连上一个公网可用的 MQTT Broker，把它哄好，不再报错
         JSONObject mqInfo = new JSONObject();
         // 如果是本地运行，这里应该是本机局域网 IP
-        mqInfo.put("host", getHostIp());
+        mqInfo.put("host", getHostIp()); 
         mqInfo.put("port", 1883);
         mqInfo.put("topic", devSno);
         resp.put("mqinfo", mqInfo);
@@ -537,15 +310,5 @@ public class RecordController {
         String jsonResp = resp.toJSONString();
         logger.info("Sending login response: {}", jsonResp);
         return jsonResp;
-    }
-
-    // 【新增】设备状态查询接口
-    @GetMapping("/debug/device-status")
-    public String getDeviceStatus() {
-        JSONObject result = new JSONObject();
-        // result.put("devices", deviceSyncService.getAllDeviceStatus());
-        // result.put("activeDevices", deviceSyncService.getActiveDevices());
-        result.put("queryTime", java.time.LocalDateTime.now().toString());
-        return result.toJSONString();
     }
 }

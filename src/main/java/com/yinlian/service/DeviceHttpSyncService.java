@@ -82,7 +82,7 @@ public class DeviceHttpSyncService {
                     logger.warn("Skip member {}: No card found", member.getMemberName());
                 continue;
             }
-            MemberFaceEntity face = memberFaceRepository.findFirstByMemberCode(memberCode);
+            MemberFaceEntity face = findFaceForCard(memberCode, card.getCardNo());
             if (face == null || StringUtils.isBlank(face.getImagePath())) {
                 missingFace++;
                 if (missingFace <= 5)
@@ -132,6 +132,70 @@ public class DeviceHttpSyncService {
         result.put("deleted", deleted);
         result.put("deleteFailed", deleteFailed);
         return result;
+    }
+
+    public JSONObject syncMemberToDevice(String deviceIp, String memberCode) {
+        JSONObject result = new JSONObject();
+        if (StringUtils.isBlank(deviceIp)) {
+            result.put("status", "failed");
+            result.put("message", "deviceIp is blank");
+            return result;
+        }
+        if (StringUtils.isBlank(memberCode)) {
+            result.put("status", "failed");
+            result.put("message", "memberCode is blank");
+            return result;
+        }
+
+        MemberEntity member = memberRepository.findById(memberCode).orElse(null);
+        if (member == null || Integer.valueOf(1).equals(member.getDeleted())) {
+            result.put("status", "failed");
+            result.put("message", "member not found or deleted");
+            return result;
+        }
+        MemberCardEntity card = memberCardRepository.findFirstByMemberCode(memberCode);
+        if (card == null || StringUtils.isBlank(card.getCardNo())) {
+            result.put("status", "failed");
+            result.put("message", "card not found");
+            return result;
+        }
+        MemberFaceEntity face = findFaceForCard(memberCode, card.getCardNo());
+        if (face == null || StringUtils.isBlank(face.getImagePath())) {
+            result.put("status", "failed");
+            result.put("message", "face image not found");
+            return result;
+        }
+        String base64 = loadImageBase64(face.getImagePath());
+        if (base64 == null) {
+            result.put("status", "failed");
+            result.put("message", "face image file missing or empty");
+            return result;
+        }
+
+        boolean ok = sendAddWhiteList(deviceIp, 1, 1, member, card, base64);
+        result.put("status", ok ? "ok" : "failed");
+        result.put("deviceIp", deviceIp);
+        result.put("memberCode", memberCode);
+        result.put("memberName", member.getMemberName());
+        result.put("cardNo", card.getCardNo());
+        return result;
+    }
+
+    private MemberFaceEntity findFaceForCard(String memberCode, String cardNo) {
+        MemberFaceEntity face = memberFaceRepository.findFirstByMemberCode(memberCode);
+        if (face != null) {
+            return face;
+        }
+        if (StringUtils.isBlank(cardNo)) {
+            return null;
+        }
+        face = memberFaceRepository.findById(cardNo).orElse(null);
+        if (face != null && StringUtils.isBlank(face.getMemberCode())) {
+            face.setMemberCode(memberCode);
+            memberFaceRepository.save(face);
+            logger.info("[SYNC] Backfilled memberCode {} for cardNo {}", memberCode, cardNo);
+        }
+        return face;
     }
 
     private boolean sendAddWhiteList(String deviceIp,

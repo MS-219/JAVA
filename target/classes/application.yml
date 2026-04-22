@@ -61,3 +61,6 @@ mqtt:
   host: tcp://127.0.0.1:1883 # 连接本地 MQTT Broker
   clientId: local-server
 
+sync:
+  initial-delay-ms: 60000
+  fixed-delay-ms: 900000 # 15分钟执行一次，避免上一轮刚结束下一轮又紧接着开始
