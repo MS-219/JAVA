@@ -78,6 +78,9 @@ public class MemberEntity {
     @Column(name = "synced_at")
     private LocalDateTime syncedAt;
 
+    @Column(name = "open_id", length = 128)
+    private String openId;
+
     @Lob
     @Column(name = "raw_payload")
     private String rawPayload;
@@ -260,6 +263,14 @@ public class MemberEntity {
 
     public void setRawPayload(String rawPayload) {
         this.rawPayload = rawPayload;
+    }
+
+    public String getOpenId() {
+        return openId;
+    }
+
+    public void setOpenId(String openId) {
+        this.openId = openId;
     }
 }
 

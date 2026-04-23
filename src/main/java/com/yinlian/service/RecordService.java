@@ -631,23 +631,7 @@ public class RecordService {
             // 如果没有日期参数，查询所有记录
             rawList = repository.getLatestRecords(maxRecords);
         } else {
-            // 按日期和设备筛选（使用startDate作为主要日期）
-            String dateFilter = StringUtils.isNotBlank(startDate) ? startDate : endDate;
-            rawList = repository.getFilteredRecords(dateFilter, deviceCode, maxRecords);
-
-            // 如果有日期范围，需要在内存中过滤
-            if (StringUtils.isNotBlank(startDate) && StringUtils.isNotBlank(endDate) && !startDate.equals(endDate)) {
-                final String finalStartDate = startDate;
-                final String finalEndDate = endDate;
-                rawList = rawList.stream()
-                    .filter(r -> {
-                        String time = r.getString("time");
-                        if (time == null) return false;
-                        String recordDate = time.split(" ")[0];
-                        return recordDate.compareTo(finalStartDate) >= 0 && recordDate.compareTo(finalEndDate) <= 0;
-                    })
-                    .collect(java.util.stream.Collectors.toList());
-            }
+            rawList = repository.getFilteredRecordsByDateRange(startDate, endDate, deviceCode, maxRecords);
         }
 
         // 如果指定了分页参数，进行分页处理
@@ -768,21 +752,7 @@ public class RecordService {
         } else if (StringUtils.isBlank(startDate) && StringUtils.isBlank(endDate)) {
             rawList = repository.getLatestRecords(maxRecords);
         } else {
-            String dateFilter = StringUtils.isNotBlank(startDate) ? startDate : endDate;
-            rawList = repository.getFilteredRecords(dateFilter, deviceCode, maxRecords);
-
-            if (StringUtils.isNotBlank(startDate) && StringUtils.isNotBlank(endDate) && !startDate.equals(endDate)) {
-                final String finalStartDate = startDate;
-                final String finalEndDate = endDate;
-                rawList = rawList.stream()
-                    .filter(r -> {
-                        String time = r.getString("time");
-                        if (time == null) return false;
-                        String recordDate = time.split(" ")[0];
-                        return recordDate.compareTo(finalStartDate) >= 0 && recordDate.compareTo(finalEndDate) <= 0;
-                    })
-                    .collect(java.util.stream.Collectors.toList());
-            }
+            rawList = repository.getFilteredRecordsByDateRange(startDate, endDate, deviceCode, maxRecords);
         }
 
         // 分页处理
