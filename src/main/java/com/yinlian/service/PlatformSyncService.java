@@ -6,6 +6,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * 平台端同步调度，封装分页/重试逻辑。
  */
@@ -25,12 +28,21 @@ public class PlatformSyncService {
 
     public void syncAllMembers(String lastUpdateTime) throws Exception {
         logger.info("[SYNC] 平台会员同步: 开始，lastUpdateTime={}", lastUpdateTime);
+        Set<String> activeMemberCodes = lastUpdateTime == null ? new HashSet<>() : null;
         paginatePlatform("plat.member.sync", lastUpdateTime,
                 pageNo -> unionPayClient.fetchMembers(pageNo, DEFAULT_PAGE_SIZE, lastUpdateTime),
                 resp -> {
                     JSONArray memberList = resp.getJSONArray("memberList");
-                    memberSyncService.saveMembers(memberList);
+                    Set<String> pageMemberCodes = memberSyncService.saveMembers(memberList);
+                    if (activeMemberCodes != null) {
+                        activeMemberCodes.addAll(pageMemberCodes);
+                    }
                 });
+        if (activeMemberCodes != null) {
+            int deletedCount = memberSyncService.markMissingMembersDeleted(activeMemberCodes);
+            logger.info("[SYNC] 平台会员同步: 全量校准完成，平台有效会员数={}, 本地标记删除={}",
+                    activeMemberCodes.size(), deletedCount);
+        }
         logger.info("[SYNC] 平台会员同步: 完成");
     }
 

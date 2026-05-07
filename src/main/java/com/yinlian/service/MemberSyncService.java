@@ -30,10 +30,13 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Base64;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,10 +75,11 @@ public class MemberSyncService {
     }
 
     @Transactional
-    public void saveMembers(JSONArray memberList) {
+    public Set<String> saveMembers(JSONArray memberList) {
+        Set<String> seenMemberCodes = new HashSet<>();
         if (memberList == null || memberList.isEmpty()) {
             logger.warn("[SYNC] 会员落库: 本页没有会员数据");
-            return;
+            return seenMemberCodes;
         }
         logger.info("[SYNC] 会员落库: 本页准备处理 {} 条", memberList.size());
         List<MemberEntity> entities = new ArrayList<>(memberList.size());
@@ -89,6 +93,7 @@ public class MemberSyncService {
                 logger.warn("Skipping member with empty memberCode: {}", json);
                 continue;
             }
+            seenMemberCodes.add(memberCode);
             MemberEntity entity = memberRepository.findById(memberCode).orElseGet(MemberEntity::new);
             entity.setMemberCode(memberCode);
             entity.setMemberUniqueId(json.getString("memberUniqueId"));
@@ -120,6 +125,18 @@ public class MemberSyncService {
         }
         memberRepository.saveAll(entities);
         logger.info("[SYNC] 会员落库: 成功保存 {} 条", entities.size());
+        return seenMemberCodes;
+    }
+
+    @Transactional
+    public int markMissingMembersDeleted(Collection<String> activeMemberCodes) {
+        if (activeMemberCodes == null || activeMemberCodes.isEmpty()) {
+            logger.warn("[SYNC] 会员落库: 本次全量同步未拿到任何有效会员，跳过缺失删除校准");
+            return 0;
+        }
+        int count = memberRepository.markMissingAsDeleted(activeMemberCodes);
+        logger.info("[SYNC] 会员落库: 平台未返回的本地会员已标记删除 {} 条", count);
+        return count;
     }
 
     @Transactional

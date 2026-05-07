@@ -494,7 +494,9 @@
                 <div class="panel stat-card">
                     <div class="corner-deco tl"></div>
                     <div class="corner-deco tr"></div>
-                    <div class="panel-title" style="width: 100%; box-sizing: border-box;">今日通行人次</div>
+                    <div class="panel-title" style="width: 100%; box-sizing: border-box;">
+                        {{ showingLatestFallback ? '最近通行记录' : '今日通行人次' }}
+                    </div>
                     <div class="stat-num">{{ stats.todayCount }}</div>
                 </div>
 
@@ -667,14 +669,21 @@
     <script>
         const { createApp } = Vue
 
+        function getLocalDateString() {
+            const now = new Date()
+            const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+            return local.toISOString().split('T')[0]
+        }
+
         createApp({
             data() {
-                const today = new Date().toISOString().split('T')[0]
+                const today = getLocalDateString()
                 return {
                     currentTime: '',
                     stats: { todayCount: 0, totalRecords: 0 },
                     records: [],
                     zoomedImage: null,
+                    showingLatestFallback: false,
                     // 日期范围筛选
                     filterStartDate: today,
                     filterEndDate: today,
@@ -744,12 +753,41 @@
                         const res = await fetch(url)
                         if (res.ok) {
                             const data = await res.json()
-                            this.stats.todayCount = data.todayCount
-                            this.records = data.recentRecords
-                            // 更新分页信息
-                            this.pagination.totalElements = data.totalElements || data.todayCount
-                            this.pagination.totalPages = data.totalPages || 1
-                            this.pagination.currentPage = data.currentPage || 0
+                            this.applyDashboardData(data)
+
+                            if (this.shouldLoadLatestFallback(data)) {
+                                await this.fetchLatestFallback()
+                            } else {
+                                this.showingLatestFallback = false
+                            }
+                        }
+                    } catch (e) {
+                        console.error(e)
+                    }
+                },
+                applyDashboardData(data) {
+                    this.stats.todayCount = data.todayCount
+                    this.records = data.recentRecords || []
+                    this.pagination.totalElements = data.totalElements || data.todayCount || 0
+                    this.pagination.totalPages = data.totalPages || 1
+                    this.pagination.currentPage = data.currentPage || 0
+                },
+                shouldLoadLatestFallback(data) {
+                    return !this.isFiltered
+                        && !this.isSearching
+                        && !this.filterDevice
+                        && this.pagination.currentPage === 0
+                        && this.filterStartDate === this.filterEndDate
+                        && (data.totalElements || data.todayCount || 0) === 0
+                },
+                async fetchLatestFallback() {
+                    try {
+                        const url = `/dashboard/stats/paged?page=0&size=${this.pagination.pageSize}`
+                        const res = await fetch(url)
+                        if (res.ok) {
+                            const data = await res.json()
+                            this.applyDashboardData(data)
+                            this.showingLatestFallback = (this.records.length > 0)
                         }
                     } catch (e) {
                         console.error(e)
@@ -784,6 +822,7 @@
                             const data = await res.json()
                             this.stats.todayCount = data.todayCount
                             this.records = data.recentRecords
+                            this.showingLatestFallback = false
                             this.pagination.totalElements = data.totalElements || data.todayCount
                             this.pagination.totalPages = data.totalPages || 1
                             this.pagination.currentPage = data.currentPage || 0
@@ -793,7 +832,7 @@
                     }
                 },
                 resetFilter() {
-                    const today = new Date().toISOString().split('T')[0]
+                    const today = getLocalDateString()
                     this.filterStartDate = today
                     this.filterEndDate = today
                     this.filterDevice = ''
@@ -801,6 +840,7 @@
                     this.isFiltered = false
                     this.isSearching = false
                     this.searchMessage = ''
+                    this.showingLatestFallback = false
                     this.fetchData()
                 },
                 // 【新增】日期改变时的处理：如果正在搜索某人，则保留搜索条件
@@ -836,6 +876,7 @@
                             if (data.success) {
                                 this.records = data.records
                                 this.stats.todayCount = data.count
+                                this.showingLatestFallback = false
                                 this.searchMessage = `找到 ${data.count} 条记录 (匹配 ${data.matchedMembers} 人)`
                                 // 更新分页信息
                                 this.pagination.totalElements = data.count
@@ -886,6 +927,7 @@
                             const data = await res.json()
                             this.records = data.recentRecords
                             this.stats.todayCount = data.todayCount
+                            this.showingLatestFallback = false
                             this.pagination.totalElements = data.totalElements
                             this.pagination.totalPages = data.totalPages || 1
                             this.pagination.currentPage = data.currentPage

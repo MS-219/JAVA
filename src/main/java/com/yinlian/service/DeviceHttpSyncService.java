@@ -64,6 +64,7 @@ public class DeviceHttpSyncService {
         int deleteFailed = 0;
 
         int missingCard = 0;
+        int inactiveCard = 0;
         int missingFace = 0;
         int missingImage = 0;
 
@@ -75,7 +76,7 @@ public class DeviceHttpSyncService {
             if (Integer.valueOf(1).equals(member.getDeleted())) {
                 continue;
             }
-            MemberCardEntity card = memberCardRepository.findFirstByMemberCode(memberCode);
+            MemberCardEntity card = findUsableCard(memberCode);
             if (card == null || StringUtils.isBlank(card.getCardNo())) {
                 missingCard++;
                 if (missingCard <= 5)
@@ -122,8 +123,8 @@ public class DeviceHttpSyncService {
         }
 
         logger.info(
-                "[SYNC] 设备 {}: 推送完成，候选总数={}, 成功新增/覆盖={}, 失败={}, 缺卡={}, 缺人脸={}, 缺图片={}, 已删除={}, 删除失败={}",
-                deviceIp, total, success, failed, missingCard, missingFace, missingImage, deleted, deleteFailed);
+                "[SYNC] 设备 {}: 推送完成，候选总数={}, 成功新增/覆盖={}, 失败={}, 缺卡={}, 无效卡={}, 缺人脸={}, 缺图片={}, 已删除={}, 删除失败={}",
+                deviceIp, total, success, failed, missingCard, inactiveCard, missingFace, missingImage, deleted, deleteFailed);
 
         result.put("status", failed == 0 && deleteFailed == 0 ? "ok" : "partial");
         result.put("total", total);
@@ -132,6 +133,26 @@ public class DeviceHttpSyncService {
         result.put("deleted", deleted);
         result.put("deleteFailed", deleteFailed);
         return result;
+    }
+
+    private boolean isInactiveCard(MemberCardEntity card) {
+        return Integer.valueOf(1).equals(card.getDeleted())
+                || Integer.valueOf(1).equals(card.getLossState())
+                || Integer.valueOf(1).equals(card.getLockState())
+                || Integer.valueOf(0).equals(card.getEnableState());
+    }
+
+    private MemberCardEntity findUsableCard(String memberCode) {
+        List<MemberCardEntity> cards = memberCardRepository.findByMemberCode(memberCode);
+        if (cards == null || cards.isEmpty()) {
+            return null;
+        }
+        for (MemberCardEntity card : cards) {
+            if (card != null && StringUtils.isNotBlank(card.getCardNo()) && !isInactiveCard(card)) {
+                return card;
+            }
+        }
+        return null;
     }
 
     public JSONObject syncMemberToDevice(String deviceIp, String memberCode) {
@@ -153,7 +174,7 @@ public class DeviceHttpSyncService {
             result.put("message", "member not found or deleted");
             return result;
         }
-        MemberCardEntity card = memberCardRepository.findFirstByMemberCode(memberCode);
+        MemberCardEntity card = findUsableCard(memberCode);
         if (card == null || StringUtils.isBlank(card.getCardNo())) {
             result.put("status", "failed");
             result.put("message", "card not found");
